@@ -88,15 +88,36 @@ def save(data, reference, path):
 CROP_MM = 30.0
 
 
-def cropped_box(labels, zooms, margin_mm=CROP_MM):
-    """Bounding box of all labelled voxels, grown by margin_mm on every side."""
-    box = []
+def spine_box(labels, zooms, margin_mm=CROP_MM):
+    """Box around the MAIN piece (largest 26-connected component) of every
+    vertebra label, grown by margin_mm on every side.
+
+    Stray pieces far from the spine (e.g. pelvic bone labelled C1) are left
+    out, so the box stays small on large scans. Anything outside the box is
+    more than margin_mm from every vertebra's main piece and touches none of
+    them; the engine's Step 1 removes such pieces (far from every vertebra,
+    and far from its own), so the adapter clears them directly.
+    """
+    lo = np.full(3, np.iinfo(np.int64).max)
+    hi = np.zeros(3, np.int64)
+    struct = np.ones((3, 3, 3), bool)
+    for v, box in enumerate(engine.ndimage.find_objects(labels), start=1):
+        if box is None:
+            continue
+        comp, n = engine.ndimage.label(labels[box] == v, structure=struct)
+        if n == 0:
+            continue
+        main = int(np.argmax(np.bincount(comp.ravel())[1:])) + 1
+        sub = engine.ndimage.find_objects((comp == main).astype(np.uint8))[0]
+        del comp
+        starts = [b.start + s.start for b, s in zip(box, sub)]
+        stops = [b.start + s.stop for b, s in zip(box, sub)]
+        lo, hi = np.minimum(lo, starts), np.maximum(hi, stops)
+    out = []
     for axis, size in enumerate(labels.shape):
-        other = tuple(a for a in range(3) if a != axis)
-        idx = np.nonzero(labels.any(axis=other))[0]
         pad = int(np.ceil(margin_mm / zooms[axis]))
-        box.append(slice(max(int(idx[0]) - pad, 0), min(int(idx[-1]) + 1 + pad, size)))
-    return tuple(box)
+        out.append(slice(max(int(lo[axis]) - pad, 0), min(int(hi[axis]) + pad, size)))
+    return tuple(out)
 
 
 def disjoint(a, b):
@@ -142,11 +163,12 @@ def process_case(input_path, output_path, ct_path, class_map, subfolder_name='se
     try:
         zooms = reference.header.get_zooms()[:3]
         refined = np.zeros(raw.shape, raw.dtype)
+        outside = 0
         if raw.any():
-            # work on the labelled region plus a CROP_MM margin: the engine only
-            # looks at bone near the labels, and the full grid of a fine-sliced
-            # scan would need several times the memory
-            box = cropped_box(raw, zooms)
+            # work on the spine plus a CROP_MM margin (see spine_box): the full
+            # grid of a fine-sliced scan would need several times the memory
+            box = spine_box(raw, zooms)
+            outside = int(np.count_nonzero(raw)) - int(np.count_nonzero(raw[box]))
             ct = np.asarray(ct_image.dataobj[box]).astype(np.float32)
             affine = reference.affine.copy()
             affine[:3, 3] = reference.affine[:3, :3] @ [s.start for s in box] + reference.affine[:3, 3]
@@ -176,6 +198,7 @@ def process_case(input_path, output_path, ct_path, class_map, subfolder_name='se
             'raw': str(source / subfolder_name), 'ct': str(ct_path),
             'label_map': {str(i): ids[n] for i, n in enumerate(NAMES, 1)},
             'missing_input_masks': missing,
+            'far_stray_voxels_removed': outside,
             'step1_summary': {k: sum(a['action'] == k for a in steps['actions'])
                               for k in ('remove', 'relabel', 'keep')},
             'step2': steps['step2'], 'step3': steps['step3'],

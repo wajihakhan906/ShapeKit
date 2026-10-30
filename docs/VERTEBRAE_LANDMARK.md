@@ -71,8 +71,12 @@ python main.py --vertebrae_engine shapekit_landmark --vertebrae_only \
   --output_folder /data/landmark_results --cpu_count 1 --log_folder /data/landmark_logs
 ```
 
-`--case CASE` (repeatable) restricts the run. Start with one worker: a large
-CT (512 x 512 x 1394) needs about 6 GB of RAM.
+`--case CASE` (repeatable) restricts the run. The adapter works on a box
+around the main piece of every vertebra plus 30 mm, so memory stays modest:
+the 512 x 512 x 1394 demo scan peaked at 2.3 GB and took about 6 minutes on
+one CPU core. Labelled pieces outside that box (for example pelvic bone
+labelled C1) are far strays, which the engine's Step 1 removes anyway; the
+adapter clears them and counts them in the report.
 
 ## Outputs
 
@@ -102,6 +106,8 @@ scans it falls back to the model's own labels.
 
 ## Regression record
 
-On both demo cases, `main.py --vertebrae_engine shapekit_landmark` reproduced
-the evaluated submission exactly: all 24 masks per case matched voxel for voxel,
-with matching shape and affine.
+On both demo cases at full size (512 x 512 x 391 and 512 x 512 x 1394), the
+adapter reproduced the evaluated submission exactly: all 24 masks per case
+matched voxel for voxel, with matching shape and affine. `main.py
+--vertebrae_engine shapekit_landmark` gave the same result on cropped copies of
+both cases. `python -m pytest tests -q`: 72 passed.
